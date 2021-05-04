@@ -5,13 +5,23 @@
 (defn old-key
   "Returns the old version of the given 'new' key if it exists in 'old-keys'.
   If there are multiple old versions, the one with the biggest transaction time is returned."
-  [old-keys new]
-  (let [[a b _ _] new]
+  [old-keys new pos-vec]
+  (let [;;new [1 2 3 4 5]
+        ;;pos-vec [2 3]
+        filter (reduce (fn [filter pos]
+                          (println filter "--- " pos)
+                          (assoc filter pos (nth new pos)))
+                        (vec (take (count  new) (repeat nil)))
+                        pos-vec)
+        ;;[a _ b _] new
+        ]
+
     (when (seq old-keys)
-      (when-let [candidates (subseq old-keys >= [a b nil nil])]
+      (when-let [candidates (subseq old-keys >= filter #_[a nil nil nil])]
         (->> candidates
              (map first)
-             (take-while #(and (= a (first %)) (= b (second %))))
+             (filter #(and (= a (first %)) (= b (nth % 2))))
+          ;;(take-while #(and (= a (first %)) (= b (nth % 2))))
              reverse
              first)))))
 
