@@ -22,11 +22,25 @@
       (when-let [candidates (subseq old-keys >= mask)]
         (->> candidates
              (map first)
-             (filter #(reduce (fn [bool i]
-                                (and bool (= (nth % i) (nth new i))))
-                              true
-                              indices))
-             max-t)))))
+             ((fn [ks]
+                (if (= [0 2] indices)
+                  (do
+                    ;;(println "----")
+                    (->> ks
+                         (filter #(reduce (fn [bool i]
+                                            (and bool (= (nth % i) (nth new i))))
+                                          true
+                                          indices))
+                         max-t))
+                  (->> ks
+                       (take-while #(reduce (fn [bool i]
+                                              (and bool (= (nth % i) (nth new i))))
+                                            true
+                                            indices))
+                       max-t
+                       ;;reverse
+                       ;;first
+                       )))))))))
 
 (defn remove-old
   "Removes old key from the 'kvs' map using 'remove-fn' function if 'new' and 'old' keys' first two entries match."
