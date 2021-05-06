@@ -2,7 +2,6 @@
   (:require [hitchhiker.tree :as tree]
             [hitchhiker.tree.op :as op]))
 
-
 (defn- max-t
   "Returns the key with the max 't' component"
   [ks]
