@@ -72,7 +72,8 @@
               :else (dt/raise "Bad argument to transact, expected map with :tx-data as key.
                                Vector and sequence are allowed as argument but deprecated."
                               {:error :transact/syntax :argument arg-map}))
-        _ (log/debug "Transacting with arguments: " arg)]
+        ;;_ (log/debug "Transacting with arguments: " arg)
+        ]
     (try
       (deref (transact! connection arg))
       (catch Exception e
