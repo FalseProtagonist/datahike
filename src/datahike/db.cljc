@@ -677,6 +677,70 @@
 
 ;; ----------------------------------------------------------------------------
 
+(def db-caches (atom {}))
+(def db-cache-sizes (atom {}))
+
+(defn insert-cache [db-hash cache]
+  (let [caches @db-caches]
+    (when (>= (count caches) max-db-caches) ;; TODO: better part of record so it can be destroyed?
+      (let [last-used-db (first (reduce (fn [[d-hash1 {^Date d1 :last-access :as cache1}]
+                                             [d-hash2 {^Date d2 :last-access :as cache2}]]
+                                          (if (.after d1 d2)
+                                            [d-hash1 cache1]
+                                            [d-hash2 cache2]))
+                                        caches))]
+        (swap! db-caches dissoc last-used-db)))
+    (swap! db-caches assoc db-hash {:cache cache :last-access (Date.)})
+    cache))
+
+(defn insert-into-db-cache [db key res] ;; TODO: complete!
+  (let [db-cache (get @db-caches (.-hash db))
+        obj-size (count res)
+        remaining-space (- (:cache-size (.-config db)) (:size db-cache))]
+    (when (<= obj-size (:cache-size (.-config db)))
+      (let [cleared-cache
+            (if (> obj-size remaining-space)
+              (first (reduce (fn [[cache-val remaining-space]
+                                  [key1 {:keys [size]}]]
+                               (let [new-cache (dissoc cache-val key1)
+                                     new-rem-space (+ remaining-space size)]
+                                 (if (>= new-rem-space obj-size)
+                                   (reduced [new-cache new-rem-space])
+                                   [new-cache new-rem-space])))
+                             [(:value db-cache) remaining-space]
+                             (reverse (sort-by #(get-in % [1 :last-access]) (seq db-cache)))))
+              (:value db-cache))]
+        (swap! db-caches assoc (.-hash db) {:cache (assoc cleared-cache key {:size obj-size
+                                                                             :last-access (Date.)
+                                                                             :value res})
+                                            :last-access (Date.)
+                                            :size (+ (:cache-size (.-config db))
+                                                     (- remaining-space)
+                                                     obj-size)})))))
+
+(defn memoize-for [^DB db key f]
+  (if (or (zero? (:cache-size (.-config db)))
+          (zero? (.-hash db))) ;; empty db
+    (f)
+    (let [db-cache (or (get @db-caches (.-hash db))
+                       (insert-cache (.-hash db) {}))]
+      (if-some [cached-res (get db-cache key nil)]
+        cached-res
+        (let [res (f)]
+          (swap! db-caches assoc (.-hash db) [(assoc db-cache key res) (Date.)]) ;; make insert-into-db!
+          res)))))
+
+(defn- search-current-indices [^DB db pattern]
+  (memoize-for db [:search pattern]
+               #(let [[_ a _ _] pattern]
+                  (search-indices (.-eavt db)
+                                  (.-aevt db)
+                                  (.-avet db)
+                                  pattern
+                                  (indexing? db a)
+                                  false))))
+
+
 (defn attr->properties [k v]
   (case v
     :db.unique/identity [:db/unique :db.unique/identity :db/index]
