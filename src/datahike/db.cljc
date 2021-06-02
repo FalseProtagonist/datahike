@@ -2,6 +2,7 @@
   (:require
    #?(:cljs [goog.array :as garray])
    [clojure.walk]
+   [clojure.core.cache.wrapped :as c]
    [clojure.data]
    #?(:clj [clojure.pprint :as pp])
    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
@@ -677,8 +678,8 @@
 
 ;; ----------------------------------------------------------------------------
 
-(def db-caches (atom {}))
-(def db-cache-sizes (atom {}))
+(def db-caches (c/lru-cache-factory {}))
+(def db-cache-sizes (c/lru-cache-factory {}))
 
 (defn insert-cache [db-hash cache]
   (let [caches @db-caches]
