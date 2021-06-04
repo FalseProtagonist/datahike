@@ -7,9 +7,10 @@
    #?(:clj [clojure.pprint :as pp])
    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
-   [datahike.constants :refer [e0 tx0 emax txmax]]
+   [datahike.constants :refer [e0 tx0 emax txmax max-db-caches]]
    [datahike.tools :refer [get-time case-tree raise]]
    [datahike.schema :as ds]
+   [datahike.lru :refer [lru-datom-cache-factory]]
    [me.tonsky.persistent-sorted-set.arrays :as arrays]
    [datahike.config :as dc]
    [clojure.spec.alpha :as s])
@@ -145,7 +146,7 @@
 ;; ----------------------------------------------------------------------------
 
 
-(declare hash-datoms equiv-db empty-db resolve-datom validate-attr components->pattern indexing?)
+(declare hash-datoms equiv-db empty-db resolve-datom validate-attr components->pattern indexing? search-current-indices search-temporal-indices)
 #?(:cljs (declare pr-db))
 
 (defn db-transient [db]
@@ -235,8 +236,7 @@
 
   ISearch
   (-search [db pattern]
-           (let [[_ a _ _] pattern]
-             (search-indices eavt aevt avet pattern (indexing? db a) false)))
+           (search-current-indices db pattern))
 
   IIndexAccess
   (-datoms [db index-type cs]
@@ -344,28 +344,6 @@
 
   (-index-range [db attr start end]
                 (filter (.-pred db) (-index-range (.-unfiltered-db db) attr start end))))
-
-(defn- search-current-indices [^DB db pattern]
-  (let [[_ a _ _] pattern]
-    (search-indices (.-eavt db)
-                    (.-aevt db)
-                    (.-avet db)
-                    pattern
-                    (indexing? db a)
-                    false)))
-
-(defn- search-temporal-indices [^DB db pattern]
-  (let [[_ a _ _ added] pattern
-        result (search-indices (.-temporal-eavt db)
-                               (.-temporal-aevt db)
-                               (.-temporal-avet db)
-                               pattern
-                               (indexing? db a)
-                               true)]
-    (case added
-      true (filter datom-added result)
-      false (remove datom-added result)
-      nil result)))
 
 (defn temporal-search [^DB db pattern]
   (concat (search-current-indices db pattern)
@@ -678,58 +656,19 @@
 
 ;; ----------------------------------------------------------------------------
 
-(def db-caches (c/lru-cache-factory {}))
-(def db-cache-sizes (c/lru-cache-factory {}))
-
-(defn insert-cache [db-hash cache]
-  (let [caches @db-caches]
-    (when (>= (count caches) max-db-caches) ;; TODO: better part of record so it can be destroyed?
-      (let [last-used-db (first (reduce (fn [[d-hash1 {^Date d1 :last-access :as cache1}]
-                                             [d-hash2 {^Date d2 :last-access :as cache2}]]
-                                          (if (.after d1 d2)
-                                            [d-hash1 cache1]
-                                            [d-hash2 cache2]))
-                                        caches))]
-        (swap! db-caches dissoc last-used-db)))
-    (swap! db-caches assoc db-hash {:cache cache :last-access (Date.)})
-    cache))
-
-(defn insert-into-db-cache [db key res] ;; TODO: complete!
-  (let [db-cache (get @db-caches (.-hash db))
-        obj-size (count res)
-        remaining-space (- (:cache-size (.-config db)) (:size db-cache))]
-    (when (<= obj-size (:cache-size (.-config db)))
-      (let [cleared-cache
-            (if (> obj-size remaining-space)
-              (first (reduce (fn [[cache-val remaining-space]
-                                  [key1 {:keys [size]}]]
-                               (let [new-cache (dissoc cache-val key1)
-                                     new-rem-space (+ remaining-space size)]
-                                 (if (>= new-rem-space obj-size)
-                                   (reduced [new-cache new-rem-space])
-                                   [new-cache new-rem-space])))
-                             [(:value db-cache) remaining-space]
-                             (reverse (sort-by #(get-in % [1 :last-access]) (seq db-cache)))))
-              (:value db-cache))]
-        (swap! db-caches assoc (.-hash db) {:cache (assoc cleared-cache key {:size obj-size
-                                                                             :last-access (Date.)
-                                                                             :value res})
-                                            :last-access (Date.)
-                                            :size (+ (:cache-size (.-config db))
-                                                     (- remaining-space)
-                                                     obj-size)})))))
+(def db-caches (c/lru-cache-factory {} :threshold max-db-caches))
 
 (defn memoize-for [^DB db key f]
   (if (or (zero? (:cache-size (.-config db)))
           (zero? (.-hash db))) ;; empty db
     (f)
-    (let [db-cache (or (get @db-caches (.-hash db))
-                       (insert-cache (.-hash db) {}))]
-      (if-some [cached-res (get db-cache key nil)]
-        cached-res
-        (let [res (f)]
-          (swap! db-caches assoc (.-hash db) [(assoc db-cache key res) (Date.)]) ;; make insert-into-db!
-          res)))))
+    (let [db-cache (c/lookup-or-miss db-caches
+                                     (.-hash db) 
+                                    (fn [x] (lru-datom-cache-factory {} :threshold (:cache-size (.-config db)))))
+          value (c/lookup-or-miss db-cache key f)]
+         (println db-cache )
+         (println  value)
+      value)))
 
 (defn- search-current-indices [^DB db pattern]
   (memoize-for db [:search pattern]
@@ -741,6 +680,19 @@
                                   (indexing? db a)
                                   false))))
 
+(defn- search-temporal-indices [^DB db pattern]
+  (memoize-for db [:temporal-search pattern]
+               #(let [[_ a _ _ added] pattern
+                      result (search-indices (.-temporal-eavt db)
+                                             (.-temporal-aevt db)
+                                             (.-temporal-avet db)
+                                             pattern
+                                             (indexing? db a)
+                                             true)]
+                  (case added
+                    true (filter datom-added result)
+                    false (remove datom-added result)
+                    nil result))))
 
 (defn attr->properties [k v]
   (case v
