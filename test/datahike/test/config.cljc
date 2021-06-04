@@ -43,7 +43,7 @@
                          :initial-tx nil
                          :index :datahike.index/hitchhiker-tree
                          :schema-flexibility :write
-                         :cache-size 1000}]
+                         :cache-size 100000}]
     (is (= (merge default-new-cfg
                   {:store {:backend :mem :id "deprecated-test"}})
            (from-deprecated mem-cfg)))
@@ -60,7 +60,7 @@
               :keep-history? true
               :schema-flexibility :write
               :index :datahike.index/hitchhiker-tree
-              :cache-size 1000}
+              :cache-size 100000}
              (-> config (dissoc :name)))))))
 
 (deftest core-config-test
