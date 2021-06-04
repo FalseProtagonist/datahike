@@ -64,7 +64,6 @@
 (defn lru [limit]
   (->LRU {} (sorted-map) {} 0 limit))
 
-
 (defcache LRUDatomCache [cache lru counts n-total-datoms tick datom-limit]
   CacheProtocol
   (lookup [_ item]
@@ -121,15 +120,15 @@
                         (into (clojure.data.priority-map/priority-map)
                               (concat (take (- datom-limit (count base)) (for [k (range (- datom-limit) 0)] [k k]))
                                       (for [[k _] base] [k 0])))
-                        (zipmap (keys base) 
-                                (map #(count (get base key)) 
+                        (zipmap (keys base)
+                                (map #(count (get base key))
                                      (keys base)))
                         0
                         0
                         datom-limit))
   Object
   (toString [_]
-            (str cache \, \space lru \, \space tick \, \space datom-limit)))
+            (str cache \, \space lru \, \space counts \, \space n-total-datoms \, \space tick \, \space datom-limit)))
 
 (defn lru-datom-cache-factory
   "Returns an LRU cache with the cache and usage-table initialied to `base` --

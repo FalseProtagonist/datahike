@@ -663,11 +663,9 @@
           (zero? (.-hash db))) ;; empty db
     (f)
     (let [db-cache (c/lookup-or-miss db-caches
-                                     (.-hash db) 
-                                    (fn [x] (lru-datom-cache-factory {} :threshold (:cache-size (.-config db)))))
-          value (c/lookup-or-miss db-cache key f)]
-         (println db-cache )
-         (println  value)
+                                     (.-hash db)
+                                     (fn [x] (lru-datom-cache-factory {} :threshold (:cache-size (.-config db)))))
+          value (c/lookup-or-miss db-cache key (fn [_] (f)))]
       value)))
 
 (defn- search-current-indices [^DB db pattern]
