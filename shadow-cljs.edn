@@ -8,6 +8,33 @@
    :asset-path "/js"
    :modules {:main {:entries [datahike.db]}}}
 
+  :node
+  {:target :node-library
+   :compiler-options {:infer-externs :auto}
+   :runtime :node
+   :output-to "datahike.js"
+   :exports {:db datahike.js/db
+             :init_db datahike.js/init_db
+             :empty_db datahike.js/empty_db
+             :db_with datahike.js/db_with
+             :entity_db datahike.js/entity_db
+             :q datahike.js/q
+             :pull datahike.js/pull
+             :pull_many datahike.js/pull_many
+             :entity datahike.js/entity
+             :filter datahike.js/filter
+             :create_conn datahike.js/create_conn
+             :create_database datahike.js/create_database
+             :conn_from_db datahike.js/conn_from_db
+             :conn_from_datoms datahike.js/conn_from_datoms
+             :reset_conn datahike.js/reset_conn
+             :transact datahike.js/transact
+             :listen datahike.js/listen
+             :unlisten datahike.js/unlisten
+             :datoms datahike.js/datoms
+             :seek_datoms datahike.js/seek_datoms
+             :squuid datahike.js/squuid
+             :squuid_time_millis datahike.js/squuid_time_millis}} 
 
   :browser-test
   {:target :browser-test
@@ -25,7 +52,9 @@
    :node-test
    {:target :node-test
     :output-to "out/node-tests.js"
-    :autorun true}
+    :autorun true
+    :compiler-options {:infer-externs :auto}
+    :devtools {:ignore-warnings true}}
 
    :ci
    {:target :karma

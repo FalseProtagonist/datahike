@@ -1,0 +1,31 @@
+{
+  "name": "datahike",
+  "version": "1.0.0",
+  "description": "<h1 align=\"center\">     Datahike </h1> <p align=\"center\">",
+  "main": "index.js",
+  "directories": {
+    "doc": "doc",
+    "example": "examples",
+    "test": "test"
+  },
+  "dependencies": {
+    "rifraf": "^2.0.3",
+    "rimraf": "^3.0.2"
+  },
+  "devDependencies": {
+    "shadow-cljs": "^2.12.7"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/replikativ/datahike.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/replikativ/datahike/issues"
+  },
+  "homepage": "https://github.com/replikativ/datahike#readme"
+}

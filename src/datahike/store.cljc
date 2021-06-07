@@ -1,7 +1,7 @@
 (ns datahike.store
   (:require [hitchhiker.tree.bootstrap.konserve :as kons]
             [clojure.spec.alpha :as s]
-            #?(:clj [konserve.filestore :as fs])
+            [konserve.filestore :as fs]
             [konserve.memory :as mem]
             [clojure.core.async :as async]
             [hitchhiker.tree.utils.cljs.async :as ha]
@@ -9,6 +9,18 @@
             #?(:cljs [konserve.indexeddb :refer [new-indexeddb-store delete-indexeddb-store]])
             [konserve.serializers :as ser]
             [environ.core :refer [env]]))
+
+(defmulti store-exists?
+  "Checks whether the store exists"
+  :backend)
+
+#?(:cljs
+   (defmethod store-exists? :file [{:keys [path]}]
+     (go-try S (<? S (fs/check-folder-writeable path)))))
+
+#?(:cljs
+   (defmethod store-exists? :default [{:keys [backend]}]
+     (async/go (async/<! false))))
 
 (defmulti empty-store
   "Creates an empty store"
@@ -108,14 +120,21 @@
           (kons/add-hitchhiker-tree-handlers
            (<?? S (fs/new-fs-store path)))))
 
-#_#?(:clj (defmethod delete-store  :indexeddb [{:keys [id]}]
-            (fs/delete-store id)))
+#?(:cljs (defmethod empty-store :file [{:keys [path]}]
+  (async/go (kons/add-hitchhiker-tree-handlers
+             (<? S (fs/new-fs-store path))))))
 
-#?(:cljs (defmethod delete-store :file [{:keys [path]}]
-           (fs/delete-store path)))
+;; #_#? blows up shadow-cljs
+;; #_#?(:clj (defmethod delete-store  :indexeddb [{:keys [id]}]
+            ;; (fs/delete-store id)))
 
-#?(:clj (defmethod connect-store :file [{:keys [path]}]
-          (<?? S (fs/new-fs-store path))))
+(defmethod delete-store :file [{:keys [path]}]
+           (fs/delete-store path))
+
+(defmethod connect-store :file [{:keys [path]}]
+           (empty-store {:backend :file :path path}))
+
+
 
 ;; indexeddb
 

@@ -122,7 +122,151 @@
   (-delete-database [config])
   (-database-exists? [config]))
 
-(extend-protocol IConfiguration
+;; switching to "extend" in raw because I can't find a protocol which works for clojurescript maps
+;; IMap doesn't work, as noted here: https://stackoverflow.com/questions/34700857/how-to-extend-protocols-to-clojurescript-collections-generically
+;; clojurescript seems to sometimes switch PersistentArrayMaps to PersistentHashMaps
+;; so extend will allow me to cover multiple clojurescript concrete types without code duplication
+
+(def iconfig-methods
+  {
+   :-connect (fn [config]
+               (go-try S
+                       (if-not (ha/<? (-database-exists? config))
+                         (do (println "Database doesn't exist ") nil)  ;; Log this to user
+                         (let [config (dc/load-config config)
+                               store-config (:store config)
+                               raw-store (ha/<? (ds/connect-store store-config))
+                               _ (when-not raw-store
+                                   (dt/raise "Backend does not exist." {:type :backend-does-not-exist
+                                                                        :config config}))
+                               store (kons/add-hitchhiker-tree-handlers
+                                      (kc/ensure-cache
+                                       raw-store
+                                       (atom (cache/lru-cache-factory {} :threshold 1000))))
+                               stored-db (<? S (k/get-in store [:db]))
+                               _ (when-not stored-db
+                                   (ds/release-store store-config store)
+                                   (dt/raise "Database does not exist." {:type :db-does-not-exist
+                                                                         :config config}))
+                               {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx hash]} stored-db
+                               empty (<? S (db/empty-db nil config))
+                               lock-ch (async/chan) ;; TODO: consider reader literals
+                               _ (async/put! lock-ch :unlocked)]
+                           (d/conn-from-db
+                            (assoc empty
+                                   :max-tx max-tx
+                                   :config config
+                                   :schema schema
+                                   :hash hash
+                                   :max-eid (<? S (db/init-max-eid eavt-key))
+                                   :eavt eavt-key
+                                   :aevt aevt-key
+                                   :avet avet-key
+                                   :temporal-eavt temporal-eavt-key
+                                   :temporal-aevt temporal-aevt-key
+                                   :temporal-avet temporal-avet-key
+                                   :rschema rschema
+                                   :store store
+                                   :lock lock-ch))))))
+   :-create-database (fn [config #_& #_deprecated-config]
+                       (ha/go-try
+                        (if (ha/<? (-database-exists? config))
+                            (println "Database already exists ")  ;; Log this to user
+                          (let [
+                                {:keys [keep-history? initial-tx] :as config} (dc/load-config config nil #_deprecated-config)
+                                store-config (:store config)
+                                store (kc/ensure-cache
+                                       (ha/<? (ds/empty-store store-config))
+                                       (atom (cache/lru-cache-factory {} :threshold 1000)))
+                                stored-db (<? S (k/get-in store [:db]))
+                                _ (when stored-db
+                                    (dt/raise "Database already exists." {:type :db-already-exists :config store-config}))
+                                empty-db-test  (ha/<? (db/empty-db nil config))
+                                {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx hash]}
+                                empty-db-test
+                                backend (kons/->KonserveBackend store)]
+                            (<? S (k/assoc-in store [:db]
+                                              (merge {:schema   schema
+                                                      :max-tx max-tx
+                                                      :hash hash
+                                                      :rschema  rschema
+                                                      :config   config
+                                                      :eavt-key (ha/<? (di/-flush eavt backend))
+                                                      :aevt-key (ha/<? (di/-flush aevt backend))
+                                                      :avet-key (ha/<? (di/-flush avet backend))}
+                                                     (when keep-history?
+                                                       {:temporal-eavt-key (ha/<? (di/-flush temporal-eavt backend))
+                                                        :temporal-aevt-key (ha/<? (di/-flush temporal-aevt backend))
+                                                        :temporal-avet-key (ha/<? (di/-flush temporal-avet backend))}))))
+                            (ds/release-store store-config store)
+                            (if initial-tx
+                              (let [conn (<? S (-connect config))
+                                    created-db (<? S (transact conn initial-tx))]
+                                (release conn)
+                                created-db)
+                              store-config)))))
+   :-delete-database
+   (fn [config]
+     (ha/go-try
+      (if (ha/<? (-database-exists? config))
+        (do
+          (dc/load-config config {})
+          (let [config (dc/load-config config {})]
+            (async/<! (ds/delete-store (:store config)))
+            (ha/<? (ds/delete-store (:store config)))
+        (do (println "Database doesn't exist") nil))))))
+   :-database-exists?
+   (fn [config]
+     (async/go
+       (let [exists? (or (memory-store? config)
+                         #?(:cljs (contains? (ha/<? (collect-indexeddb-stores))  ;; TODO: ensure that this is our db
+                                    (get-in config [:store :id])))
+                        ;; note this will error 
+                         #?(:cljs
+                            (let [delegate-store-exists (async/<!
+                                                         (ds/store-exists? (:store config)))]
+                              delegate-store-exists)))]
+         (if exists?
+           (let [config (dc/load-config config)
+                 store-config (:store config)
+                 raw-store (ha/<? (ds/connect-store store-config))]
+             (if (not (nil? raw-store))
+               (let [
+                     store (kons/add-hitchhiker-tree-handlers
+                            (kc/ensure-cache
+                             raw-store
+                             (atom (cache/lru-cache-factory {} :threshold 1000))))
+                     stored-db (<? S (k/get-in store [:db]))]
+                 (ds/release-store store-config store)
+                 (not (nil? stored-db)))
+               (do
+                 (ds/release-store store-config raw-store)
+                 false)))
+           false))))})
+
+#?(:clj (extend clojure.lang.IPersistentMap IConfiguration iconfig-methods))
+
+#?(:cljs (extend-type cljs.core/PersistentArrayMap IConfiguration
+                      (-connect          [config] 
+                      ((:-connect iconfig-methods)          config))
+                      (-create-database  [config] 
+                      ((:-create-database iconfig-methods)  config))
+                      (-delete-database  [config] 
+                      ((:-delete-database iconfig-methods)  config))
+                      (-database-exists? [config] 
+                      ((:-database-exists? iconfig-methods) config))))
+
+#?(:cljs (extend-type cljs.core/PersistentHashMap IConfiguration 
+                      (-connect          [config] 
+                      ((:-connect iconfig-methods)          config))
+                      (-create-database  [config] 
+                      ((:-create-database iconfig-methods)  config))
+                      (-delete-database  [config] 
+                      ((:-delete-database iconfig-methods)  config))
+                      (-database-exists? [config] 
+                      ((:-database-exists? iconfig-methods) config))))
+
+#_(extend-protocol IConfiguration
   #_String
   #_(-connect [uri]
               (-connect (dc/uri->config uri)))

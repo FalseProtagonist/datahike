@@ -3,8 +3,17 @@
   (:require
    [goog.object :as go]
    [datahike.core :as d]
+   [datahike.api :as dapi]
    [clojure.walk :as walk]
-   [cljs.reader]))
+   [clojure.core.async :refer [take! <!]]
+   [hitchhiker.tree.utils.cljs.async :as ha]
+   [cljs.reader])
+  (:require-macros [cljs.core.async.macros :refer [go]]))
+
+
+(defn chan-to-promise [chan] 
+;;  https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Using_promises
+  (js/Promise. (fn [resolve] (take! chan resolve))))
 
 ;; Conversions
 
@@ -12,6 +21,15 @@
   (if (and (string? s) (= (subs s 0 1) ":"))
     (keyword (subs s 1))
     s))
+
+(defn keywordize-all-map [m]
+  (reduce-kv 
+   (fn [m k v] (assoc m (keywordize k) (walk/postwalk keywordize v)))
+   {}
+   (js->clj m)))
+
+(defn keywordize-sequence [ms]
+  (into [] (map keywordize-all-map ms)))
 
 (defn- schema->clj [schema]
   (->> (js->clj schema)
@@ -33,12 +51,14 @@
 (defn- entity->clj [e]
   (cond
     (map? e)
-    (entity-map->clj e)
-
+       ;; dunno why it's doing this call
+       ;; which only keywordizes very selectively
+         ;; maybe I'm wrong but feels like better to have convention that 
+         ;; everything that looks like a keyword from js is treated as one
+    (keywordize-all-map e)
     (= (first e) ":db.fn/call")
     (let [[_ f & args] e]
       (concat [:db.fn/call (fn [& args] (entities->clj (apply f args)))] args))
-
     (sequential? e)
     (let [[op & entity] e]
       (concat [(keywordize op)] entity))))
@@ -60,7 +80,7 @@
        :tempids   (tempids->js (:tempids report))
        :tx_meta   (:tx-meta report)})
 
-(defn js->Datom [d]
+(defn js->Datom [^js d]
   (if (array? d)
     (d/datom (aget d 0) (aget d 1) (aget d 2) (or (aget d 3) d/tx0) (or (aget d 4) true))
     (d/datom (.-e d) (.-a d) (.-v d) (or (.-tx d) d/tx0) (or (.-added d) true))))
@@ -73,28 +93,54 @@
 
 ;; Public API
 
-(defn ^:export empty_db [& [schema]]
-  (d/empty-db (schema->clj schema)))
+(defn ^:export connect [ & [config]]
+  (chan-to-promise (dapi/connect (keywordize-all-map config))))
+
+(defn ^:export create_database [config]
+  (chan-to-promise (dapi/create-database (keywordize-all-map config))))
+
+(defn ^:export reset_conn [conn db & [tx-meta]]
+  (let [report 
+        #js 
+        {:db_before @conn
+         :db_after  db
+         :tx_data   
+         (into-array
+                     (concat
+                       (map #(assoc % :added false) (d/datoms @conn :eavt))
+                      (d/datoms db :eavt)))
+         :tx_meta   tx-meta}]
+    (reset! conn db)
+    (doseq [[_ callback] @(:listeners (meta conn))]
+      (callback report))
+    db))
+
+(defn ^:export empty_db [& [schema config]]
+  (chan-to-promise
+    (d/empty-db (schema->clj schema) (keywordize-all-map config))))
 
 (defn ^:export init_db [datoms & [schema]]
   (d/init-db (map js->Datom datoms) (schema->clj schema)))
 
 (defn ^:export q [query & sources]
-  (let [query   (cljs.reader/read-string query)
-        results (apply d/q query sources)]
-    (clj->js results)))
+  (chan-to-promise 
+   (go 
+     (let [query   (cljs.reader/read-string query)
+           results (apply d/q query sources)]
+       (clj->js (<! results))))))
 
 (defn ^:export pull [db pattern eid]
-  (let [pattern (cljs.reader/read-string pattern)
-        eid (js->clj eid)
-        results (d/pull db pattern eid)]
-    (pull-result->js results)))
+  (chan-to-promise 
+   (go (let [pattern (cljs.reader/read-string pattern)
+             eid (js->clj eid)
+             results (<! (d/pull db pattern eid))]
+    (pull-result->js results)))))
 
 (defn ^:export pull_many [db pattern eids]
-  (let [pattern (cljs.reader/read-string pattern)
+  (chan-to-promise (go (let [pattern (cljs.reader/read-string pattern)
         eids (js->clj eids)
-        results (d/pull-many db pattern eids)]
-    (pull-result->js results)))
+        results (<! (d/pull-many db pattern eids))]
+    (pull-result->js results)))))
 
 (defn ^:export db_with [db entities]
   (d/db-with db (entities->clj entities)))
@@ -108,7 +154,7 @@
 (def ^:export is_filtered d/is-filtered)
 
 (defn ^:export create_conn [& [schema]]
-  (d/create-conn (schema->clj schema)))
+  (chan-to-promise (d/create-conn (schema->clj schema))))
 
 (def ^:export conn_from_db d/conn-from-db)
 
@@ -119,25 +165,13 @@
 (defn ^:export db [conn] @conn)
 
 (defn ^:export transact [conn entities & [tx-meta]]
-  (let [entities (entities->clj entities)
-        report   (-> (d/-transact! conn entities tx-meta)
-                     tx-report->js)]
-    (doseq [[_ callback] @(:listeners (meta conn))]
-      (callback report))
-    report))
-
-(defn ^:export reset_conn [conn db & [tx-meta]]
-  (let [report #js {:db_before @conn
-                    :db_after  db
-                    :tx_data   (into-array
-                                (concat
-                                 (map #(assoc % :added false) (d/datoms @conn :eavt))
-                                 (d/datoms db :eavt)))
-                    :tx_meta   tx-meta}]
-    (reset! conn db)
-    (doseq [[_ callback] @(:listeners (meta conn))]
-      (callback report))
-    db))
+  (chan-to-promise 
+   (go (let [entities (entities->clj entities)
+             report   (-> (ha/<? (d/-transact! conn entities tx-meta))
+                              tx-report->js)]
+         (doseq [[_ callback] @(:listeners (meta conn))]
+           (callback report))
+         report))))
 
 (def ^:export listen d/listen!)
 (def ^:export unlisten d/unlisten!)
